@@ -1,0 +1,9 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/CombatTargeting/.vs
+/CombatTargeting/bin/Debug
+/CombatTargeting/obj/Debug
+/CombatTargeting/CombatTargeting.csproj.user
