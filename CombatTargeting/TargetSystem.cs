@@ -1,10 +1,7 @@
-﻿using System.Collections;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using BepInEx.Configuration;
 using UnityEngine;
-using UnityEngine.UI;
-using UnityEngine.UIElements;
 
 namespace CombatTargetingSystem
 {
@@ -17,7 +14,6 @@ namespace CombatTargetingSystem
         private Character _currentTarget;
         private Player _player;
 
-        private bool isUsingGamepad = false;
         private bool _changeTargetCooldown = true;
         private bool _cameraFocusEnabled = true;
         private bool _shouldFocus = false;
@@ -328,7 +324,7 @@ namespace CombatTargetingSystem
             if (Vector3.Distance(transform.position, target.transform.position) > _focusmaxDistance)
                 return;
 
-            if (_player.IsHoldingAttack())
+            if (_player.m_attackHold)
                 return;
 
             Vector3 currentLookDir = _player.GetLookDir().normalized;
@@ -371,7 +367,7 @@ namespace CombatTargetingSystem
             _nearbyEnemies.Clear();
             foreach (Character character in Character.GetAllCharacters())
             {
-                if (character.IsMonsterFaction() || character.IsBoss() || character.m_faction == Character.Faction.Boss)
+                if (character.IsMonsterFaction(Time.time) || character.IsBoss() || character.m_faction == Character.Faction.Boss)
                 {
                     float distance = Vector3.Distance(transform.position, character.transform.position);
                     if (distance < _cfg.targetMaxDistance && !character.IsDead() && character != null)
@@ -380,7 +376,7 @@ namespace CombatTargetingSystem
                         //if (character != _currentTarget)
                             //UpdateCharacterHud(character, false);
                         if (!EnemyHud.m_instance.m_huds.ContainsKey(character))
-                            EnemyHud.m_instance.ShowHud(character);
+                            EnemyHud.m_instance.ShowHud(character, false);
                         EnemyHud.m_instance.m_huds[character].m_hoverTimer = 0f;
                     }
                 }
@@ -415,7 +411,7 @@ namespace CombatTargetingSystem
             for (int i = 0; i < _nearbyEnemies.Count; i++)
             {
                 Character enemy = _nearbyEnemies[i];
-                if (enemy.IsDead() || enemy == null)
+                if (enemy == null || enemy.IsDead())
                 {
                     discardIndex.Add(i);
                     continue;
@@ -456,7 +452,7 @@ namespace CombatTargetingSystem
         private void AssignNewTarget(Character target)
         {
             UnassignCurrentTarget();
-            //UpdateCharacterHud(target, true);
+
             _currentTarget = target;
         }
 
@@ -464,7 +460,7 @@ namespace CombatTargetingSystem
         {
             if (_targetLocked)
                 UnlockTarget();
-            //UpdateCharacterHud(_currentTarget, false);
+
             _currentTarget = null;
         }
 
@@ -499,16 +495,6 @@ namespace CombatTargetingSystem
                 renderers.ToList().ForEach(renderer => renderer.SetAlpha(0.15f));
             }
 
-        }
-
-        private void DebugPrintNearbyEnemies()
-        {
-            Debug.Log("-- Nearby Enemies -- ");
-            foreach (Character character in _nearbyEnemies)
-            {
-                Debug.Log(character.m_name);
-            }
-            Debug.Log("-- End -- ");
         }
 
         private void OnDestroy()

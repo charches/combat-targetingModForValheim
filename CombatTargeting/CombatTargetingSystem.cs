@@ -56,7 +56,7 @@ namespace CombatTargetingSystem
         public float w_targetIsDamaged;
     }
 
-    [BepInPlugin("projjm.combattargetingsystem", "Combat Targeting System", "1.1.3")]
+    [BepInPlugin("projjm.combattargetingsystem", "Combat Targeting System", "1.1.4")]
     [BepInProcess("valheim.exe")]
 
     public class CombatTargetingSystem : BaseUnityPlugin
@@ -251,7 +251,7 @@ namespace CombatTargetingSystem
 
                 if (targetSystem != null && targetSystem.HasTarget() && !Helper.IsInInventoryEtc()) // In combat
                 {
-                    ZInput.instance.m_mouseActive = true;
+                    //ZInput.instance.m_mouseActive = true;
                     if (ForceHideKeyHints == false)
                     {
                         UserSettingShowHints = KeyHints.instance.m_keyHintsEnabled;
@@ -373,7 +373,7 @@ namespace CombatTargetingSystem
                         if (dot < 0.5f)
                             quickTurn = true;
                     }
-                    else if (character.InAttack() || character.IsHoldingAttack()) // Projectile Attacks
+                    else if (character.InAttack() || character.m_attackHold) // Projectile Attacks
                     {
                         quaternion = character.m_lookYaw;
                     }
@@ -505,7 +505,7 @@ namespace CombatTargetingSystem
                     if (gui == null)
                         continue;
 
-                    bool isEnemy = character.IsMonsterFaction() || character.IsBoss() || character.m_faction == Character.Faction.Boss;
+                    bool isEnemy = character.IsMonsterFaction(Time.time) || character.IsBoss() || character.m_faction == Character.Faction.Boss;
                     if (!isEnemy)
                         return;
 
