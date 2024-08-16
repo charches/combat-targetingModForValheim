@@ -1,6 +1,9 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using BepInEx.Configuration;
+using HarmonyLib;
 using UnityEngine;
 
 namespace CombatTargetingSystem
@@ -97,13 +100,15 @@ namespace CombatTargetingSystem
             }
         }
 
+        private static readonly FieldInfo _mMoveDirField = typeof(Player).GetField("m_moveDir", BindingFlags.NonPublic | BindingFlags.Instance);
         public Character GetNextAttackTarget(float attackRange)
         {
             SetChangeTargetCooldown(0.25f);
 
-            if (!_targetLocked && _player.m_moveDir != Vector3.zero)
+            Vector3 moveDir = (Vector3)_mMoveDirField.GetValue(_player);
+            if (!_targetLocked && moveDir != Vector3.zero)
             {
-                Character target = GetDirectionalEnemy(_player.m_moveDir, attackRange);
+                Character target = GetDirectionalEnemy(moveDir, attackRange);
                 AssignNewTarget(target);
                 HasAttacked(target);
                 return target;
@@ -196,18 +201,21 @@ namespace CombatTargetingSystem
             }
         }
 
+        private static readonly FieldInfo _mHudsField = typeof(EnemyHud).GetField("m_huds", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly Type _hudDataType = typeof(EnemyHud).GetNestedType("HudData", BindingFlags.NonPublic);
+        private static readonly FieldInfo _healthFastField = _hudDataType.GetField("m_healthFast", BindingFlags.Public | BindingFlags.Instance);
         private void LockTarget()
         {
             _targetLocked = true;
-            EnemyHud.HudData hud;
-            if (EnemyHud.instance.m_huds.ContainsKey(_currentTarget))
+            var mHuds = (Dictionary<Character, object>)_mHudsField.GetValue(EnemyHud.instance);
+            if (mHuds.ContainsKey(_currentTarget))
             {
-                hud = EnemyHud.instance.m_huds[_currentTarget];
-                GuiBar bar = hud.m_healthFast;
+                var hud = mHuds[_currentTarget];
+                GuiBar bar = (GuiBar)_healthFastField.GetValue(hud);
 
                 if (!_savedDefaultHealthColour)
                 {
-                    _defaultHealthColor = hud.m_healthFast.GetColor();
+                    _defaultHealthColor = bar.GetColor();
                     _savedDefaultHealthColour = true;
                 }
 
@@ -221,11 +229,11 @@ namespace CombatTargetingSystem
         private void UnlockTarget()
         {
             _targetLocked = false;
-            EnemyHud.HudData hud;
-            if (EnemyHud.instance.m_huds.ContainsKey(_currentTarget))
+            var mHuds = (Dictionary<Character, object>)_mHudsField.GetValue(EnemyHud.instance);
+            if (mHuds.ContainsKey(_currentTarget))
             {
-                hud = EnemyHud.instance.m_huds[_currentTarget];
-                GuiBar bar = hud.m_healthFast;
+                var hud = mHuds[_currentTarget];
+                GuiBar bar = (GuiBar)_healthFastField.GetValue(hud);
                 bar.SetColor(_defaultHealthColor);
             }
 
@@ -313,6 +321,8 @@ namespace CombatTargetingSystem
             }
         }
 
+        private static readonly FieldInfo _mAttackHoldField = typeof(Player).GetField("m_attackHold", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly MethodInfo _updateEyeRotationMethod = typeof(Player).GetMethod("UpdateEyeRotation", BindingFlags.NonPublic | BindingFlags.Instance);
         public void FocusOnTarget(Character target)
         {
             bool _focusEnabled = _cameraFocusEnabled && target != null && (!_cfg.focusDisableOnRun || (_cfg.focusDisableOnRun && (!_player.IsRunning() && !ZInput.GetButton("Run") && !ZInput.GetButton("JoyRun"))))
@@ -324,7 +334,8 @@ namespace CombatTargetingSystem
             if (Vector3.Distance(transform.position, target.transform.position) > _focusmaxDistance)
                 return;
 
-            if (_player.m_attackHold)
+            var mAttackHold = (bool)_mAttackHoldField.GetValue(_player);
+            if (mAttackHold)
                 return;
 
             Vector3 currentLookDir = _player.GetLookDir().normalized;
@@ -353,9 +364,13 @@ namespace CombatTargetingSystem
             float speedFactor = 1 - ((enemyDotProduct + 1) / 2f);
             Vector3 dir = Vector3.Slerp(currentLookDir.normalized, _targetDirection.normalized, Time.deltaTime * _focusSpeed * speedFactor);
             _player.SetLookDir(dir);
-            _player.UpdateEyeRotation();
+            _updateEyeRotationMethod.Invoke(_player, null);
         }
 
+        private static readonly FieldInfo _enemyHudInstanceField = typeof(EnemyHud).GetField("m_instance", BindingFlags.NonPublic | BindingFlags.Static);
+        private static readonly FieldInfo _hudsField = typeof(EnemyHud).GetField("m_huds", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly MethodInfo _showHudMethod = typeof(EnemyHud).GetMethod("ShowHud", BindingFlags.NonPublic | BindingFlags.Instance);
+        private static readonly FieldInfo _hoverTimerField = typeof(Hud).GetField("m_hoverTimer", BindingFlags.NonPublic | BindingFlags.Instance);
         private void ScanForEnemies()
         {
             if (_player.IsDead() || _player == null)
@@ -374,15 +389,26 @@ namespace CombatTargetingSystem
                     {
                         _nearbyEnemies.Add(character);
                         //if (character != _currentTarget)
-                            //UpdateCharacterHud(character, false);
-                        if (!EnemyHud.m_instance.m_huds.ContainsKey(character))
-                            EnemyHud.m_instance.ShowHud(character, false);
-                        EnemyHud.m_instance.m_huds[character].m_hoverTimer = 0f;
+                        //UpdateCharacterHud(character, false);
+                        var enemyHudInstance = (EnemyHud)_enemyHudInstanceField.GetValue(null);
+                        dynamic huds = _hudsField.GetValue(enemyHudInstance);
+                        if (!huds.ContainsKey(character))
+                        {
+                            _showHudMethod.Invoke(enemyHudInstance, new object[] { character, false });
+                        }
+
+                        if (huds.ContainsKey(character))
+                        {
+                            var hud = huds[character];
+                            _hoverTimerField.SetValue(hud, 0f);
+                        }
                     }
                 }
             }
         }
 
+        private static readonly FieldInfo m_instanceField = typeof(GameCamera).GetField("m_instance", BindingFlags.NonPublic | BindingFlags.Static);
+        private static readonly FieldInfo m_cameraField = typeof(GameCamera).GetField("m_camera", BindingFlags.NonPublic | BindingFlags.Instance);
         private void UpdateCurrentTarget()
         {
             Character _current = _currentTarget;
@@ -403,7 +429,8 @@ namespace CombatTargetingSystem
                     return;
             }
 
-            Camera mainCam = GameCamera.m_instance.m_camera;
+            var gameCameraInstance = m_instanceField.GetValue(null) as GameCamera;
+            var mainCam = m_cameraField.GetValue(gameCameraInstance) as Camera;
             int maxScoreIndex = -1;
             float maxScore = int.MinValue;
             List<int> discardIndex = new List<int>();
@@ -464,21 +491,26 @@ namespace CombatTargetingSystem
             _currentTarget = null;
         }
 
-
+        private static readonly Type hudDataType = AccessTools.Inner(typeof(EnemyHud), "HudData");
+        private static readonly FieldInfo m_guiField = AccessTools.Field(hudDataType, "m_gui");
         private void UpdateCharacterHud(Character character, bool isTarget)
         {
             if (character == null || character.IsDead())
                 return;
 
-            if (!EnemyHud.m_instance.m_huds.ContainsKey(character))
+            var enemyHudInstance = _enemyHudInstanceField.GetValue(null) as EnemyHud;
+            if (enemyHudInstance == null)
                 return;
 
-            EnemyHud.HudData hud = EnemyHud.m_instance.m_huds[character];
+            var huds = _mHudsField.GetValue(enemyHudInstance) as Dictionary<Character, object>;
+            if (huds == null || !huds.ContainsKey(character))
+                return;
+
+            var hud = huds[character];
             if (hud == null)
                 return;
 
-            GameObject gui = hud.m_gui.gameObject;
-
+            var gui = m_guiField.GetValue(hud) as GameObject;
             if (gui == null)
                 return;
 

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Reflection;
 using System.Collections.Generic;
 using System.Linq;
 using BepInEx;
@@ -237,10 +238,11 @@ namespace CombatTargetingSystem
 
         #region Harmony Patches
 
-        [HarmonyPatch(typeof(Player), nameof(Player.Update))]
+        [HarmonyPatch(typeof(Player), "Update")]
         class AttachGameObject
         {
             // Fix HUD Flickering Issue by disabling key hints during combat (Caused by forcing mouse active to true)
+            private static FieldInfo keyHintsEnabledField;
             public static void Prefix(Player __instance)
             {
                 if (!ModEnabled)
@@ -249,14 +251,21 @@ namespace CombatTargetingSystem
                 if (__instance != Player.m_localPlayer)
                     return;
 
+                if (keyHintsEnabledField == null)
+                {
+                    keyHintsEnabledField = AccessTools.Field(typeof(KeyHints), "m_keyHintsEnabled");
+                }
+
+                bool currentKeyHintStatus = (bool)keyHintsEnabledField.GetValue(KeyHints.instance);
+
                 if (targetSystem != null && targetSystem.HasTarget() && !Helper.IsInInventoryEtc()) // In combat
                 {
                     //ZInput.instance.m_mouseActive = true;
                     if (ForceHideKeyHints == false)
                     {
-                        UserSettingShowHints = KeyHints.instance.m_keyHintsEnabled;
+                        UserSettingShowHints = currentKeyHintStatus;
                         ForceHideKeyHints = true;
-                        KeyHints.instance.m_keyHintsEnabled = false;
+                        keyHintsEnabledField.SetValue(KeyHints.instance, false);
                     }
                 }
                 else // Out of combat
@@ -264,7 +273,7 @@ namespace CombatTargetingSystem
                     if (ForceHideKeyHints == true)
                     {
                         ForceHideKeyHints = false;
-                        KeyHints.instance.m_keyHintsEnabled = UserSettingShowHints;
+                        keyHintsEnabledField.SetValue(KeyHints.instance, UserSettingShowHints);
                     }
                 }
             }
@@ -298,15 +307,28 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(Attack), nameof(Attack.GetMeleeAttackDir))] // Actual damage direction - not character
+        [HarmonyPatch(typeof(Attack), "GetMeleeAttackDir")] // Actual damage direction - not character
         class MeleeDirectionFix
         {
+            private static FieldInfo characterField;
+            private static MethodInfo getAttackOriginMethod;
             public static bool Prefix(Attack __instance, out Transform originJoint, out Vector3 attackDir)
             {
                 Humanoid character;
-                if (__instance != null && __instance.m_character != null)
+
+                if (characterField == null)
                 {
-                    character = __instance.m_character;
+                    characterField = typeof(Attack).GetField("m_character", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (getAttackOriginMethod == null)
+                {
+                    getAttackOriginMethod = typeof(Attack).GetMethod("GetAttackOrigin", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (__instance != null && (Humanoid)characterField.GetValue(__instance) != null)
+                {
+                    character = (Humanoid)characterField.GetValue(__instance);
                 }
                 else
                 {
@@ -315,7 +337,7 @@ namespace CombatTargetingSystem
                     return false;
                 }
 
-                originJoint = __instance.GetAttackOrigin();
+                originJoint = (Transform)getAttackOriginMethod.Invoke(__instance, null);
                 Vector3 forward = character.transform.forward;
                 Vector3 aimDir = character.GetAimDir(originJoint.position);
                 aimDir.x = forward.x;
@@ -337,9 +359,14 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(Character), nameof(Character.UpdateRotation))] // Rotation of character
+        [HarmonyPatch(typeof(Character), "UpdateRotation")] // Rotation of character
         class RotationFix
         {
+            private static FieldInfo currentAttackField;
+            private static FieldInfo attackHoldField;
+            private static FieldInfo lookYawField;
+            private static FieldInfo moveDirField;
+            private static MethodInfo alwaysRotateCameraMethod;
             public static bool Prefix(Character __instance, float __result, float turnSpeed, float dt)
             {
                 bool quickTurn = false;
@@ -356,12 +383,37 @@ namespace CombatTargetingSystem
                 if (character is Player)
                     pCharacter = character as Player;
 
+                if (currentAttackField == null)
+                {
+                    currentAttackField = typeof(Player).GetField("m_currentAttack", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (attackHoldField == null)
+                {
+                    attackHoldField = typeof(Character).GetField("m_attackHold", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (lookYawField == null)
+                {
+                    lookYawField = typeof(Character).GetField("m_lookYaw", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (moveDirField == null)
+                {
+                    moveDirField = typeof(Character).GetField("m_moveDir", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (alwaysRotateCameraMethod == null)
+                {
+                    alwaysRotateCameraMethod = typeof(Character).GetMethod("AlwaysRotateCamera", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
                 Quaternion quaternion = Quaternion.identity;
 
                 if (ModEnabled && targetSystem != null && character == Player.m_localPlayer && targetSystem.HasTarget() && targetSystem.HasTarget() )
                 {
-                    if (character.IsBlocking() || (character.InAttack() && pCharacter.m_currentAttack != null && pCharacter.m_currentAttack.m_attackType != Attack.AttackType.Projectile
-                    && pCharacter.m_currentAttack.m_attackType != Attack.AttackType.TriggerProjectile)) // Melee Attacks
+                    if (character.IsBlocking() || (character.InAttack() && pCharacter != null && currentAttackField.GetValue(pCharacter) is Attack currentAttack && currentAttack.m_attackType != Attack.AttackType.Projectile &&
+                currentAttack.m_attackType != Attack.AttackType.TriggerProjectile))
                     {
                         isAttacking = true;
                         Character target = targetSystem.GetCurrentTarget();
@@ -373,22 +425,22 @@ namespace CombatTargetingSystem
                         if (dot < 0.5f)
                             quickTurn = true;
                     }
-                    else if (character.InAttack() || character.m_attackHold) // Projectile Attacks
+                    else if (character.InAttack() || (bool)attackHoldField.GetValue(character)) // Projectile Attacks
                     {
-                        quaternion = character.m_lookYaw;
+                        quaternion = (Quaternion)lookYawField.GetValue(character);
                     }
                     else // Moving around in combat
                     {
-                        Vector3 dir = character.m_moveDir;
+                        Vector3 dir = (Vector3)moveDirField.GetValue(character);
                         if (dir == Vector3.zero)
                             quaternion = Quaternion.LookRotation(character.transform.forward);
                         else
-                            quaternion = Quaternion.LookRotation(character.m_moveDir);
+                            quaternion = Quaternion.LookRotation(dir);
                     }
                 }
                 else // Not in targetting mode / out of combat
                 {
-                    quaternion = (character.AlwaysRotateCamera() ? character.m_lookYaw : Quaternion.LookRotation(character.m_moveDir));
+                    quaternion = ((bool)alwaysRotateCameraMethod.Invoke(character, null) ? (Quaternion)lookYawField.GetValue(character) : Quaternion.LookRotation((Vector3)moveDirField.GetValue(character)));
                 }
 
                 float yawDeltaAngle = Utils.GetYawDeltaAngle(character.transform.rotation, quaternion);
@@ -419,7 +471,7 @@ namespace CombatTargetingSystem
             
         }
 
-        [HarmonyPatch(typeof(EnemyHud), nameof(EnemyHud.LateUpdate))]
+        [HarmonyPatch(typeof(EnemyHud), "LateUpdate")]
         class ExtendHUDRange
         {
             public static void Postfix(EnemyHud __instance)
@@ -433,15 +485,22 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(BaseAI), nameof(BaseAI.OnDamaged))]
+        [HarmonyPatch(typeof(BaseAI), "OnDamaged")]
         class OnDamagedPatch
         {
+            private static FieldInfo characterField;
+
             public static void Postfix(BaseAI __instance, Character attacker)
             {
                 if (!ModEnabled || !targetSystem || attacker != Player.m_localPlayer)
                     return;
 
-                targetSystem.HasAttacked(__instance.m_character);
+                if (characterField == null)
+                {
+                    characterField = typeof(BaseAI).GetField("m_character", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+                Character character = (Character)characterField.GetValue(__instance);
+                targetSystem.HasAttacked(character);
             }
         }
 
@@ -458,9 +517,12 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(Hud), nameof(Hud.UpdateCrosshair))]
+        [HarmonyPatch(typeof(Hud), "UpdateCrosshair")]
         class HideCrosshairWhenHoldingWeapon
         {
+            private static FieldInfo leftItemField;
+            private static FieldInfo rightItemField;
+
             public static void Postfix(Hud __instance, Player player)
             {
                 if (!ModEnabled)
@@ -472,8 +534,18 @@ namespace CombatTargetingSystem
                 if (!targetSystem.IsEnemiesNearby())
                     return;
 
-                var leftItem = player.m_leftItem;
-                var rightItem = player.m_rightItem;
+                if (leftItemField == null)
+                {
+                    leftItemField = typeof(Player).GetField("m_leftItem", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                if (rightItemField == null)
+                {
+                    rightItemField = typeof(Player).GetField("m_rightItem", BindingFlags.NonPublic | BindingFlags.Instance);
+                }
+
+                var leftItem = (ItemDrop.ItemData)leftItemField.GetValue(player);
+                var rightItem = (ItemDrop.ItemData)rightItemField.GetValue(player);
 
                 if (leftItem != null && !NCHWeapons.Contains(leftItem.m_shared.m_itemType))
                     return;
@@ -485,23 +557,29 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(EnemyHud), nameof(EnemyHud.UpdateHuds))]
+        [HarmonyPatch(typeof(EnemyHud), "UpdateHuds")]
         class EnemyHudTransparencyFix
         {
+            private static readonly FieldInfo m_hudsField = AccessTools.Field(typeof(EnemyHud), "m_huds");
+            private static readonly Type hudDataType = AccessTools.Inner(typeof(EnemyHud), "HudData");
+            private static readonly FieldInfo m_guiField = AccessTools.Field(hudDataType, "m_gui");
             public static void Postfix(EnemyHud __instance)
             {
                 if (!ModEnabled || targetSystem == null)
                     return;
 
-                foreach (KeyValuePair<Character, EnemyHud.HudData> hudPair in __instance.m_huds)
+                dynamic m_huds = m_hudsField.GetValue(__instance);
+
+                foreach (var hudPair in m_huds)
                 {
                     Character character = hudPair.Key;
-                    EnemyHud.HudData hud = hudPair.Value;
+                    var hud = hudPair.Value;
 
                     if (hud == null)
                         continue;
 
-                    GameObject gui = hud.m_gui.gameObject;
+
+                    GameObject gui = (GameObject)m_guiField.GetValue(hud);
                     if (gui == null)
                         continue;
 
@@ -525,7 +603,7 @@ namespace CombatTargetingSystem
             }
         }
 
-        [HarmonyPatch(typeof(CharacterAnimEvent), nameof(CharacterAnimEvent.UpdateHeadRotation))]
+        [HarmonyPatch(typeof(CharacterAnimEvent), "UpdateHeadRotation")]
         class FixHeadRotation
         {
             public static void Prefix(CharacterAnimEvent __instance)
